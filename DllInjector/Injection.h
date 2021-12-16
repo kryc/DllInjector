@@ -9,8 +9,14 @@ EnableDebugPriv(
 
 int
 InjectIntoPid(
-    _In_ int Pid,
-    _In_ WCHAR* DllPath
+    _In_ const int Pid,
+    _In_ const WCHAR* DllPath
+);
+
+int
+InjectIntoImage(
+    _In_ const WCHAR* ImageName,
+    _In_ const WCHAR* DllPath
 );
 
 int

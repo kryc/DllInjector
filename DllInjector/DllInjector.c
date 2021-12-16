@@ -8,7 +8,8 @@ typedef enum _mode
 {
     MODE_NONE =     0x0,
     MODE_PID =      0x1,
-    MODE_LAUNCH =   0x2
+    MODE_LAUNCH =   0x2,
+    MODE_IMAGE =    0x4
 } MODE;
 
 int
@@ -64,6 +65,7 @@ wmain(
     int ret;
     MODE mode;
     int pid;
+    WCHAR* imageName;
     WCHAR* launchPath;
     WCHAR* launchArgs;
     WCHAR* dll;
@@ -79,6 +81,7 @@ wmain(
     mode = MODE_NONE;
     pid = -1;
     dll = NULL;
+    imageName = NULL;
     launchArgs = NULL;
     launchPath = NULL;
     errorMessage = NULL;
@@ -105,6 +108,19 @@ wmain(
 
             mode |= MODE_PID;
             pid = _wtoi(argv[i + 1]);
+            i++;
+        }
+        else if (wcscmp(argv[i], L"-image") == 0)
+        {
+            if (i == argc - 1)
+            {
+                fprintf(stderr, "[!] ERROR: No image name specified\n");
+                ret = ERROR_BAD_ARGUMENTS;
+                goto Cleanup;
+            }
+
+            mode |= MODE_IMAGE;
+            imageName = argv[i + 1];
             i++;
         }
         else if (wcscmp(argv[i], L"-launch") == 0)
@@ -173,6 +189,17 @@ wmain(
 
         printf("[+] Injecting into pid %d\n", pid);
         ret = InjectIntoPid(pid, dll);
+        break;
+    case MODE_IMAGE:
+        if (imageName == NULL)
+        {
+            fprintf(stderr, "[!] Error no image name specified\n");
+            ret = ERROR_BAD_ARGUMENTS;
+            goto Cleanup;
+        }
+
+        printf("[+] Injecting into processes with image name %ls\n", imageName);
+        ret = InjectIntoImage(imageName, dll);
         break;
     case MODE_LAUNCH:
         if (launchPath == NULL)

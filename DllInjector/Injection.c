@@ -37,8 +37,9 @@ Cleanup:
 }
 
 int
-InjectDLL(_In_ const PWCHAR DLLPath,
-    _In_ HANDLE ProcessHandle
+InjectDLL(
+    _In_ const WCHAR* DLLPath,
+    _In_ const HANDLE ProcessHandle
 )
 /*
  * DLL Injector
@@ -128,8 +129,8 @@ Cleanup:
 
 int
 InjectIntoPid(
-    _In_ int Pid,
-    _In_ WCHAR* DllPath
+    _In_ const int Pid,
+    _In_ const WCHAR* DllPath
 )
 {
     int status;
@@ -163,6 +164,98 @@ Cleanup:
     }
 
     return status;
+}
+
+static int
+FindImagePids(
+    _In_ const WCHAR* ImageName,
+    _Inout_ size_t* PidCount,
+    _Out_writes_to_ptr_(PidCount, *PidCount) int* Pids
+)
+{
+    int status;
+    DWORD aProcesses[1024];
+    DWORD cbNeeded;
+    DWORD cProcesses;
+    HANDLE hProcess;
+    WCHAR szProcessName[MAX_PATH];
+    HMODULE hMod;
+    size_t counter;
+
+    if (!EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded))
+    {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    status = ERROR_NOT_FOUND;
+    counter = 0;
+
+    cProcesses = cbNeeded / sizeof(DWORD);
+    for (size_t i = 0; i < cProcesses; i++)
+    {
+        hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, aProcesses[i]);
+
+        if (hProcess != INVALID_HANDLE_VALUE)
+        {
+            if (EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded))
+            {
+                GetModuleBaseNameW(hProcess, hMod, szProcessName, sizeof(szProcessName) / sizeof(WCHAR));
+                if (wcscmp(szProcessName, ImageName) == 0) // right process
+                {
+                    status = ERROR_SUCCESS;
+                    Pids[counter++] = (int)aProcesses[i];
+                    if (counter == *PidCount)
+                    {
+                        CloseHandle(hProcess);
+                        status = ERROR_INSUFFICIENT_BUFFER;
+                        goto Cleanup;
+                    }
+                }
+            }
+
+            CloseHandle(hProcess);
+        }
+    }
+
+    *PidCount = counter;
+
+Cleanup:
+
+    return status;
+}
+
+int
+InjectIntoImage(
+    _In_ const WCHAR* ImageName,
+    _In_ const WCHAR* DllPath
+)
+{
+    int status;
+    size_t pidCount;
+    int pids[64];
+
+    pidCount = ARRAYSIZE(pids);
+
+    status = FindImagePids(ImageName, &pidCount, pids);
+    if (status != ERROR_SUCCESS)
+    {
+        goto Cleanup;
+    }
+
+    for (size_t i = 0; i < pidCount; i++)
+    {
+        status = InjectIntoPid(pids[i], DllPath);
+        if (status != ERROR_SUCCESS)
+        {
+            goto Cleanup;
+        }
+    }
+
+Cleanup:
+
+    return status;
+
 }
 
 int
