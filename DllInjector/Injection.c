@@ -1,6 +1,43 @@
 #include <Windows.h>
 #include <psapi.h>
+#include <processthreadsapi.h>
+#include <winternl.h>
+#include <stdio.h>
 #include "Injection.h"
+
+inline void
+CloseAndNullHandle(
+    _In_ HANDLE* Handle
+)
+{
+    CloseHandle(*Handle);
+    *Handle = NULL;
+}
+
+inline BOOL
+HandleIsCurrentProcess(
+    _In_ HANDLE ProcessHandle
+)
+ /*
+ * Check that the handle provided is not
+ * for the current process
+ */
+{
+    DWORD handleId;
+
+    handleId = GetProcessId(ProcessHandle);
+    //if (handleId == 0)
+    //{
+    //    status = GetLastError();
+    //    goto Cleanup;
+    //}
+
+    if (handleId == GetCurrentProcessId())
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
 
 int
 AwaitRemoteThreadCompletion(
@@ -57,14 +94,20 @@ InjectDLL(
     DWORD  exitCode;
     DWORD pathRet;
 
-    if (ProcessHandle == INVALID_HANDLE_VALUE)
+    if (ProcessHandle == INVALID_HANDLE_VALUE || ProcessHandle == NULL)
     {
         return ERROR_BAD_ARGUMENTS;
     }
 
     hThread = INVALID_HANDLE_VALUE;
     dllPathAddr = NULL;
-    memset(fullDLLPath, 0, sizeof(fullDLLPath));
+    ZeroMemory(fullDLLPath, sizeof(fullDLLPath));
+
+    if (HandleIsCurrentProcess(ProcessHandle))
+    {
+        status = ERROR_BAD_ARGUMENTS;
+        goto Cleanup;
+    }
 
     pathRet = GetFullPathNameW(DLLPath, _MAX_PATH, fullDLLPath, NULL);
     if (pathRet == 0)
@@ -121,7 +164,7 @@ Cleanup:
 
     if (hThread != INVALID_HANDLE_VALUE && hThread != 0)
     {
-        CloseHandle(hThread);
+        CloseAndNullHandle(&hThread);
     }
 
     return status;
@@ -160,7 +203,7 @@ Cleanup:
 
     if (proc != NULL)
     {
-        CloseHandle(proc);
+        CloseAndNullHandle(&proc);
     }
 
     return status;
@@ -174,15 +217,23 @@ FindImagePids(
 )
 {
     int status;
+    size_t providedCount;
+    BOOL success;
     DWORD aProcesses[1024];
     DWORD cbNeeded;
     DWORD cProcesses;
     HANDLE hProcess;
+    DWORD nameLength;
     WCHAR szProcessName[MAX_PATH];
     HMODULE hMod;
     size_t counter;
 
-    if (!EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded))
+    providedCount = *PidCount;
+    *PidCount = 0;
+    *Pids = 0;
+
+    success = EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded);
+    if (!success)
     {
         status = GetLastError();
         goto Cleanup;
@@ -195,27 +246,38 @@ FindImagePids(
     for (size_t i = 0; i < cProcesses; i++)
     {
         hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, aProcesses[i]);
-
-        if (hProcess != INVALID_HANDLE_VALUE)
+        if (hProcess == NULL)
         {
-            if (EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded))
-            {
-                GetModuleBaseNameW(hProcess, hMod, szProcessName, sizeof(szProcessName) / sizeof(WCHAR));
-                if (wcscmp(szProcessName, ImageName) == 0) // right process
-                {
-                    status = ERROR_SUCCESS;
-                    Pids[counter++] = (int)aProcesses[i];
-                    if (counter == *PidCount)
-                    {
-                        CloseHandle(hProcess);
-                        status = ERROR_INSUFFICIENT_BUFFER;
-                        goto Cleanup;
-                    }
-                }
-            }
-
-            CloseHandle(hProcess);
+            continue;
         }
+
+        success = EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded);
+        if (!success)
+        {
+            CloseAndNullHandle(&hProcess);
+            continue;
+        }
+
+        nameLength = GetModuleBaseNameW(hProcess, hMod, szProcessName, sizeof(szProcessName) / sizeof(WCHAR));
+        if (nameLength == 0)
+        {
+            CloseAndNullHandle(&hProcess);
+            continue;
+        }
+
+        if (wcscmp(szProcessName, ImageName) == 0) // right process
+        {
+            status = ERROR_SUCCESS;
+            Pids[counter++] = (int)aProcesses[i];
+            if (counter == providedCount)
+            {
+                CloseAndNullHandle(&hProcess);
+                status = ERROR_INSUFFICIENT_BUFFER;
+                goto Cleanup;
+            }
+        }
+
+        CloseAndNullHandle(&hProcess);
     }
 
     *PidCount = counter;
@@ -266,10 +328,11 @@ EnableDebugPriv(
     int status;
     HANDLE              hToken;
     LUID                SeDebugNameValue;
-    TOKEN_PRIVILEGES    TokenPrivileges;
+    TOKEN_PRIVILEGES    tokenPrivileges;
     BOOL success;
 
     hToken = INVALID_HANDLE_VALUE;
+    ZeroMemory(&tokenPrivileges, sizeof(tokenPrivileges));
 
     success = OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken);
     if (!success)
@@ -285,11 +348,11 @@ EnableDebugPriv(
         goto Cleanup;
     }
 
-    TokenPrivileges.PrivilegeCount = 1;
-    TokenPrivileges.Privileges[0].Luid = SeDebugNameValue;
-    TokenPrivileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    tokenPrivileges.PrivilegeCount = 1;
+    tokenPrivileges.Privileges[0].Luid = SeDebugNameValue;
+    tokenPrivileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-    success = AdjustTokenPrivileges(hToken, FALSE, &TokenPrivileges, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
+    success = AdjustTokenPrivileges(hToken, FALSE, &tokenPrivileges, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
     if (!success)
     {
         status = GetLastError();
@@ -302,7 +365,204 @@ Cleanup:
 
     if (hToken != INVALID_HANDLE_VALUE)
     {
-        CloseHandle(hToken);
+        CloseAndNullHandle(&hToken);
+    }
+
+    return status;
+
+}
+
+typedef NTSTATUS(NTAPI* pfnNtQueryInformationProcess)(
+    IN  HANDLE ProcessHandle,
+    IN  PROCESSINFOCLASS ProcessInformationClass,
+    OUT PVOID ProcessInformation,
+    IN  ULONG ProcessInformationLength,
+    OUT PULONG ReturnLength    OPTIONAL
+    );
+
+int
+GetRemoteCommandLine(
+    _In_ HANDLE hProc,
+    _Out_ WCHAR** commandLineStr)
+{
+    int status;
+    HMODULE hNtDll;
+    pfnNtQueryInformationProcess ntQueryInformationProcess;
+    ULONG_PTR wow64Information;
+    PROCESS_BASIC_INFORMATION pbi;
+    PEB peb;
+    BOOL success;
+    RTL_USER_PROCESS_PARAMETERS upp;
+    WCHAR* commandLineContents;
+    size_t bytesRead;
+
+    commandLineContents = NULL;
+    *commandLineStr = NULL;
+    bytesRead = 0;
+    ZeroMemory(&pbi, sizeof(pbi));
+    ZeroMemory(&peb, sizeof(peb));
+    ZeroMemory(&upp, sizeof(upp));
+    ZeroMemory(&wow64Information, sizeof(wow64Information));
+
+    //
+    // First we need to find and read the remote process PEB
+    //
+    hNtDll = LoadLibraryExW(L"ntdll.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (hNtDll == NULL)
+    {
+        return GetLastError();
+    }
+
+    ntQueryInformationProcess = (pfnNtQueryInformationProcess)GetProcAddress(hNtDll, "NtQueryInformationProcess");
+    if (ntQueryInformationProcess == NULL) {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    //
+    // Check if it is a wow64 process
+    // We won't attempt to read a 32 bit PEB
+    // Currently, 32 bit processes are not supported
+    // 
+    status = ntQueryInformationProcess(hProc, ProcessWow64Information, &wow64Information, sizeof(wow64Information), NULL);
+    if (status < 0)
+    {
+        goto Cleanup;
+    }
+
+    if ((void*)wow64Information != NULL)
+    {
+        status = ERROR_SXS_ASSEMBLY_MISSING;
+        goto Cleanup;
+    }
+
+    status = ntQueryInformationProcess(hProc, ProcessBasicInformation, &pbi, sizeof(pbi), NULL);
+    if (status < 0)
+    {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    success = ReadProcessMemory(hProc, (PCHAR)pbi.PebBaseAddress, &peb, sizeof(PEB), NULL);
+    if (!success)
+    {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    success = ReadProcessMemory(hProc, (PVOID)peb.ProcessParameters, &upp, sizeof(RTL_USER_PROCESS_PARAMETERS), NULL);
+    if (!success)
+    {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    commandLineContents = (WCHAR*)calloc(upp.CommandLine.Length + 2, sizeof(BYTE));
+    if (commandLineContents == NULL)
+    {
+        status = ERROR_INSUFFICIENT_BUFFER;
+        goto Cleanup;
+    }
+    commandLineContents[upp.CommandLine.Length] = L'\0';
+
+    /* read the command line */
+    success = ReadProcessMemory(hProc, upp.CommandLine.Buffer, commandLineContents, upp.CommandLine.Length, &bytesRead);
+    if (!success)
+    {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    *commandLineStr = commandLineContents;
+    status = ERROR_SUCCESS;
+
+Cleanup:
+
+    FreeLibrary(hNtDll);
+
+    if (commandLineContents != NULL && status != ERROR_SUCCESS)
+    {
+        free(commandLineContents);
+    }
+
+    return status;
+}
+
+int
+InjectIntoProcessWithCommand(
+    _In_ const WCHAR* CommandLine,
+    _In_ const WCHAR* DllPath
+)
+{
+    int status;
+    BOOL success;
+    DWORD aProcesses[1024];
+    DWORD cbNeeded;
+    DWORD cProcesses;
+    HANDLE hProcess;
+    WCHAR* commandLine;
+
+    hProcess = NULL;
+    status = ERROR_UNIDENTIFIED_ERROR;
+    ZeroMemory(aProcesses, sizeof(aProcesses));
+
+    success = EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded);
+    if (!success)
+    {
+        status = GetLastError();
+        goto Cleanup;
+    }
+
+    // Calculate how many process identifiers were returned.
+    cProcesses = cbNeeded / sizeof(DWORD);
+
+    for (size_t i = 0; i < cProcesses; i++)
+    {
+        if (aProcesses[i] != 0)
+        {
+            //
+            // We want to skip the current process
+            //
+            if (aProcesses[i] == GetCurrentProcessId())
+            {
+                continue;
+            }
+
+            hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, aProcesses[i]);
+            if (hProcess == INVALID_HANDLE_VALUE || hProcess == NULL)
+            {
+                continue;
+            }
+
+            commandLine = NULL;
+            status = GetRemoteCommandLine(hProcess, &commandLine);
+            if (status != ERROR_SUCCESS)
+            {
+                // Just skip this process if we fail to get the command line, and retry the next
+                CloseAndNullHandle(&hProcess);
+                continue;
+            }
+
+            if (wcsstr(commandLine, CommandLine) != NULL)
+            {
+                printf("[+] Injecting into command %ls\n", commandLine);
+                free(commandLine);
+
+                status = InjectDLL(DllPath, hProcess);
+                CloseAndNullHandle(&hProcess);
+                if (status != ERROR_SUCCESS)
+                {
+                    goto Cleanup;
+                }
+            }
+        }
+    }
+
+Cleanup:
+
+    if (hProcess != NULL)
+    {
+        CloseAndNullHandle(&hProcess);
     }
 
     return status;
@@ -352,7 +612,7 @@ CreateSuspendedProcess(
     }
     else
     {
-        CloseHandle(processInformation.hProcess);
+        CloseAndNullHandle(&processInformation.hProcess);
     }
     
     if (ThreadHandle != NULL)
@@ -361,7 +621,7 @@ CreateSuspendedProcess(
     }
     else
     {
-        CloseHandle(processInformation.hThread);
+        CloseAndNullHandle(&processInformation.hThread);
     }
     
     if (ProcessId != NULL)
@@ -478,12 +738,12 @@ Cleanup:
 
     if (processHandle != INVALID_HANDLE_VALUE)
     {
-        CloseHandle(processHandle);
+        CloseAndNullHandle(&processHandle);
     }
 
     if (threadHandle != INVALID_HANDLE_VALUE)
     {
-        CloseHandle(threadHandle);
+        CloseAndNullHandle(&threadHandle);
     }
 
     return status;

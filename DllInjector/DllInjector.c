@@ -9,7 +9,8 @@ typedef enum _mode
     MODE_NONE =     0x0,
     MODE_PID =      0x1,
     MODE_LAUNCH =   0x2,
-    MODE_IMAGE =    0x4
+    MODE_IMAGE =    0x4,
+    MODE_COMMAND =  0x8
 } MODE;
 
 int
@@ -66,6 +67,7 @@ wmain(
     MODE mode;
     int pid;
     WCHAR* imageName;
+    WCHAR* commandLine;
     WCHAR* launchPath;
     WCHAR* launchArgs;
     WCHAR* dll;
@@ -82,6 +84,7 @@ wmain(
     pid = -1;
     dll = NULL;
     imageName = NULL;
+    commandLine = NULL;
     launchArgs = NULL;
     launchPath = NULL;
     errorMessage = NULL;
@@ -95,7 +98,7 @@ wmain(
     //
     // Parse out any optional command line switches
     //
-    for (int i = 1; i < argc-1; i++)
+    for (int i = 1; i < argc - 1; i++)
     {
         if (wcscmp(argv[i], L"-pid") == 0)
         {
@@ -121,6 +124,19 @@ wmain(
 
             mode |= MODE_IMAGE;
             imageName = argv[i + 1];
+            i++;
+        }
+        else if (wcscmp(argv[i], L"-cmd") == 0)
+        {
+            if (i == argc - 1)
+            {
+                fprintf(stderr, "[!] ERROR: No command line specified\n");
+                ret = ERROR_BAD_ARGUMENTS;
+                goto Cleanup;
+            }
+
+            mode |= MODE_COMMAND;
+            commandLine = argv[i + 1];
             i++;
         }
         else if (wcscmp(argv[i], L"-launch") == 0)
@@ -150,6 +166,7 @@ wmain(
         }
         else if (wcscmp(argv[i], L"-debug") == 0)
         {
+            printf("[+] Forcing use of debug privileges\n");
             debugPrivs = TRUE;
         }
         else if (argv[i][0] == L'-')
@@ -163,7 +180,7 @@ wmain(
     //
     // Obatin debug privileges
     //
-    if (debugPrivs)
+    if (debugPrivs || (mode & MODE_COMMAND) != 0)
     {
         printf("[+] Obtaining debug privileges\n");
         ret = EnableDebugPriv();
@@ -198,8 +215,19 @@ wmain(
             goto Cleanup;
         }
 
-        printf("[+] Injecting into processes with image name %ls\n", imageName);
+        printf("[+] Injecting into processes with image name \"%ls\"\n", imageName);
         ret = InjectIntoImage(imageName, dll);
+        break;
+    case MODE_COMMAND:
+        if (commandLine == NULL)
+        {
+            fprintf(stderr, "[!] Error no command line specified\n");
+            ret = ERROR_BAD_ARGUMENTS;
+            goto Cleanup;
+        }
+
+        printf("[+] Injecting into processes with \"%ls\" in command line\n", commandLine);
+        ret = InjectIntoProcessWithCommand(commandLine, dll);
         break;
     case MODE_LAUNCH:
         if (launchPath == NULL)

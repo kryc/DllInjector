@@ -20,6 +20,12 @@ InjectIntoImage(
 );
 
 int
+InjectIntoProcessWithCommand(
+    _In_ const WCHAR* CommandLine,
+    _In_ const WCHAR* DllPath
+);
+
+int
 LaunchAndInject(
     _In_ const PWCHAR Command,
     _In_opt_ const PWCHAR Args,
