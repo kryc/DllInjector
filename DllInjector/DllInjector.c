@@ -6,11 +6,12 @@
 
 typedef enum _mode
 {
-    MODE_NONE =     0x0,
-    MODE_PID =      0x1,
-    MODE_LAUNCH =   0x2,
-    MODE_IMAGE =    0x4,
-    MODE_COMMAND =  0x8
+    MODE_NONE     = 0x0,
+    MODE_PID      = 0x1,
+    MODE_LAUNCH   = 0x2,
+    MODE_IMAGE    = 0x4,
+    MODE_COMMAND  = 0x8,
+    MODE_NOINJECT = 0x10
 } MODE;
 
 int
@@ -164,6 +165,11 @@ wmain(
             launchArgs = argv[i + 1];
             i++;
         }
+        else if (wcscmp(argv[i], L"-noinject") == 0)
+        {
+            mode |= MODE_NOINJECT;
+            i++;
+        }
         else if (wcscmp(argv[i], L"-debug") == 0)
         {
             printf("[+] Forcing use of debug privileges\n");
@@ -240,6 +246,10 @@ wmain(
         printf("[+] Launching program and injecting DLL\n");
         ret = LaunchAndInject(launchPath, launchArgs, dll);
         break;
+    case MODE_NOINJECT:
+        printf("[+] Loading DLL into this process\n");
+        ret = LoadDll(dll);
+        break;
     default:
         fprintf(stderr, "[!] Error no or invalid operating mode specified\n");
         ret = ERROR_BAD_ARGUMENTS;
@@ -259,7 +269,15 @@ wmain(
         goto Cleanup;
     }
 
-    printf("[+] Injection successful\n");
+    switch (mode)
+    {
+    case MODE_NOINJECT:
+        printf("[+] Dll load successful\n");
+        break;
+    default:
+        printf("[+] Injection successful\n");
+    }
+    
 
 Cleanup:
 

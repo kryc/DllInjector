@@ -749,3 +749,21 @@ Cleanup:
     return status;
 
 }
+
+int
+LoadDll(
+    _In_ const PWCHAR DllPath
+)
+{
+    HMODULE moduleHandle;
+    
+    moduleHandle = LoadLibraryW(DllPath);
+
+    if (moduleHandle == NULL)
+    {
+        printf("[!] Loading library failed\n");
+        return (int)GetLastError();
+    }
+
+    return ERROR_SUCCESS;
+}

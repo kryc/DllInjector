@@ -20,6 +20,9 @@ Injects into all processes whose command line arguments match the provided strin
 `-launch`
 Launches a suspended process then injects the dll so that it will be run before the main program initialises. This is used in combination with the `-args` switch to specify the arguments to the target program.
 
+`-noinject`
+Does not inject the dll into a process. Simply calls LoadLibrary on the provided dll and quits.
+
 ## Example usages
 Launch Microsoft Edge and inject a dll named mydll.dll. This will spawn a new suspended instance of Edge. **Note** that this means that the process is not initialized and things like delay-loaded modules will not be available.
 ```powershell

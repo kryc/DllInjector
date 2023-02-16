@@ -31,3 +31,8 @@ LaunchAndInject(
     _In_opt_ const PWCHAR Args,
     _In_ const PWCHAR DllPath
 );
+
+int
+LoadDll(
+    _In_ const PWCHAR DllPath
+);
