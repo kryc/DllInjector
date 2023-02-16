@@ -77,7 +77,14 @@ wmain(
 
     if (argc < 2)
     {
-        printf("[+] Usage: %ls <args>* [DLL File]\n", argv[0]);
+        printf("Dll Injector\n");
+        printf("Usage: %ls [mode] [args]* [dll]\n", argv[0]);
+        printf("Operating modes:\n");
+        printf("  -pid\n  -image\n  -cmd\n");
+        printf("  -launch\n  -noinject\n");
+        printf("Other options:\n");
+        printf("  -args (for use with -launch)\n");
+        printf("  -debug\n");
         return 0;
     }
 
